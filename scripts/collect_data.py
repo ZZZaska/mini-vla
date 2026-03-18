@@ -1,4 +1,9 @@
-"""Collect demonstration data from Meta-World MT1 environments using expert policies"""
+"""Collect demonstration data from Meta-World MT1 environments using expert policies
+1. Visual data: images → array of shape (N, H, W, 3)
+2. State data: robot and object states → array of shape (N, state_dim)
+3. Action data: expert actions → array of shape (N, action_dim)
+4. Text data: text instructions → token IDs of shape(N, max_seq) + vocabulary dict for decoding 
+"""
 
 import os
 import argparse
@@ -7,7 +12,7 @@ import numpy as np
 import gymnasium as gym
 import metaworld
 from metaworld.policies import ENV_POLICY_MAP
-from utils.tokenizer import SimpleTokenizer
+from utils.tokenizer import SimpleTokenizer 
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -21,7 +26,7 @@ def parse_args():
     parser.add_argument("--sleep", type=float, default=0.0,
                         help="Optional sleep between steps for visualization (seconds)")
     parser.add_argument("--instruction", type=str, default="push the object to the goal",
-                        help="Fixed instruction for all episodes")
+                        help="Fixed instruction for all episodes") # use a fixed instruction for simplicity
     return parser.parse_args()
 
 
@@ -33,43 +38,50 @@ def extract_state(obs):
 
 
 def main():
-    args = parse_args()
+    args = parse_args() 
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
 
     env = gym.make(
         "Meta-World/MT1",
         env_name=args.env_name,
         seed=args.seed,
-        render_mode="rgb_array", # gives images
+        render_mode="rgb_array", # offscrees rendering 
         camera_name=args.camera_name,
-    )
+    )  # initialize Meta-World MT1 environment
 
+    # obs is the initial observation from the environment, which typically includes the robot's state and the object's state.
+    # info contains additional metadata about the environment, such as success indicators or task-specific information.
     obs, info = env.reset(seed=args.seed)
-    policy = ENV_POLICY_MAP[args.env_name]()
+    policy = ENV_POLICY_MAP[args.env_name]() # retrieve the `Expert Policy`` associated with the `Environment Name` 
 
-    images = []
-    states = []
-    actions = []
-    texts = []
 
-    # fixed instruction for this dataset
-    instruction = args.instruction
-
+    images, states,actions, texts = [], [], [], []
+    
+    instruction = args.instruction # fixed instruction for this dataset
+    
+    """Data Collection Loop: 
+    
+    For each episode (up to args.episodes):
+    1. Reset the environment and get the initial observation.
+    2. for each step in the episode (up to args.max_steps):
+        - Get the expert policy's action for the current observation.
+        - Log the current image, state, action, and instruction.
+        - Step the environment with the chosen action and observe the next state and reward.
+        - Check if the episode is done (either by truncation, termination, or success).
+        - Optionally sleep for visualization.
+    3. After the episode ends, print a summary of the episode's outcome.
+    """
     for ep in range(args.episodes):
         obs, info = env.reset()
         done = False
         steps = 0
 
         while not done and steps < args.max_steps:
-            # expert policy action on raw obs
-            action = policy.get_action(obs)  # shape (action_dim,)
-
-            # log current transition
-            img = env.render() # (H, W, 3) uint8
-            state = extract_state(obs) # (state_dim,)
-
+            img = env.render() #  (H, W, 3) uint8
             images.append(img.copy())
+            state = extract_state(obs) # (state_dim,)
             states.append(state.copy())
+            action = policy.get_action(obs)  # shape (action_dim,)
             actions.append(np.asarray(action, dtype=np.float32).copy())
             texts.append(instruction)
 
@@ -80,25 +92,31 @@ def main():
 
             if args.sleep > 0:
                 time.sleep(args.sleep)
-
+ 
         print(f"Episode {ep+1}/{args.episodes} finished after {steps} steps, success={int(info.get('success', 0))}")
 
     env.close()
-
-    # stack arrays
+    
+    """ Post-Processing:
+    1. stack the collected lists of multimoddel data into numpy arrays suitable for training.
+    2. tokenize the text instructions using the SimpleTokenizer, converting them into sequences of token ids.
+    """
     images = np.stack(images, axis=0)   # (N, H, W, 3)
     states = np.stack(states, axis=0)   # (N, state_dim)
     actions = np.stack(actions, axis=0) # (N, action_dim)
 
-    # tokenize instructions
+
     tokenizer = SimpleTokenizer(vocab=None)
     tokenizer.build_from_texts(texts)
-    text_ids_list = [tokenizer.encode(t) for t in texts]
-    max_len = max(len(seq) for seq in text_ids_list)
+    text_ids_list = [tokenizer.encode(t) for t in texts] # texts -> list of list of token ids
+    max_len = max(len(seq) for seq in text_ids_list) # pad sequences to the same length `max_len`
     text_ids = np.zeros((len(texts), max_len), dtype=np.int64)
     for i, seq in enumerate(text_ids_list):
         text_ids[i, :len(seq)] = np.array(seq, dtype=np.int64)
 
+    """
+    save the collected dataset as a compressed .npz file containing
+    """
     np.savez_compressed(
         args.output_path,
         images=images,
@@ -106,8 +124,7 @@ def main():
         actions=actions,
         text_ids=text_ids,
         vocab=tokenizer.vocab,
-    )
-
+    ) 
     print("Saved Meta-World push dataset to", args.output_path)
     print("  images:", images.shape)
     print("  states:", states.shape)

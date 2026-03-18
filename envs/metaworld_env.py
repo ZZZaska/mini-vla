@@ -1,3 +1,4 @@
+""" A standardized interface for interacting with metaworld environments, which can be used for data collection and training. """
 import gymnasium as gym
 import numpy as np
 import metaworld
